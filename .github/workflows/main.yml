@@ -28,7 +28,7 @@ jobs:
         id: format-release-notes-discord
         run: |
           DISCORD_NOTES=$(awk '{printf "%s\\n", $0}' release_notes.txt | sed 's/\\n$//')
-          echo "::set-output name=release-notes-discord::$DISCORD_NOTES"
+          echo "release-notes-discord=$DISCORD_NOTES" >> $GITHUB_OUTPUT
 
       - name: Get Version from Commit Message
         id: get-version
