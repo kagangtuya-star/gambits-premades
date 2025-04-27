@@ -1,8 +1,8 @@
 export async function deleteChatMessage({ chatId }) {
-  if (!chatId) return;
-  let chatMessage = game.messages.get(chatId);
-  if (!chatMessage) return;
-  await chatMessage.delete();
+    if(!chatId) return;
+    let chatMessage = await game.messages.get(chatId);
+    if(!chatMessage) return;
+    await chatMessage.delete();
 }
 
 export async function addReaction({ actorUuid }) {
@@ -198,12 +198,194 @@ export async function handleDialogPromises({ userDialogArgs, gmDialogArgs }) {
     let gmResolved = false;
     let anyDialogInteracted = false;
 
-    const checkAndResolve = () => {
-      if (anyDialogInteracted) {
-        resolve(anyDialogInteracted);
-      } else if (userResolved && gmResolved) {
-        resolve({ programmaticallyClosed: true });
-      }
+        const checkAndResolve = () => {
+            if (anyDialogInteracted) {
+                resolve(anyDialogInteracted);
+            } else if (userResolved && gmResolved) {
+                resolve({ programmaticallyClosed: true });
+            }
+        };
+
+        userDialogPromise.then(result => {
+            userResolved = true;
+            if (result && !result.programmaticallyClosed) {
+                anyDialogInteracted = result;
+            }
+            checkAndResolve();
+        }).catch(reject);
+
+        gmDialogPromise.then(result => {
+            gmResolved = true;
+            if (result && !result.programmaticallyClosed) {
+                anyDialogInteracted = result;
+            }
+            checkAndResolve();
+        }).catch(reject);
+    });
+}
+
+export function findValidTokens({initiatingToken, targetedToken, itemName, itemType, itemChecked, reactionCheck, sightCheck, sightCheckType = "enemy", rangeCheck, rangeTotal, dispositionCheck, dispositionCheckType, workflowType, workflowCombat, gpsUuid, sourceRules = "2014"}) {
+    let validTokens;
+
+    let debugEnabled = MidiQOL.safeGetGameSetting('gambits-premades', 'debugEnabled');
+    let workflowNonCombat = MidiQOL.safeGetGameSetting('gambits-premades', 'enable3prNoCombat');
+
+    if (!workflowCombat || workflowNonCombat) {
+        validTokens = canvas.tokens.placeables.filter(t => filterToken(t));
+    } else {
+        validTokens = game.combat?.combatants?.map(combatant => canvas.tokens.get(combatant.tokenId)).filter(t => filterToken(t));
+    }
+    
+    function filterToken(t) {
+        // Check if invalid token on the canvas
+        if (!t.actor) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor ? t.actor.name : "Unknown Actor"} failed at invalid token actor on canvas`);
+            return;
+        }
+        let checkItem;
+        if(gpsUuid) checkItem = t?.actor?.items?.find(i => i.flags["gambits-premades"]?.gpsUuid === gpsUuid);
+        else checkItem = t?.actor?.items?.find(i => i.name.toLowerCase() === itemName.toLowerCase());
+        const effectNamesOrigin = ["Confusion", "Arms of Hadar", "Shocking Grasp", "Slow", "Staggering Smite"];
+        let hasEffectOrigin = t?.actor?.appliedEffects.some(effect => effectNamesOrigin.includes(effect.name));
+        let measuredDistance = (dispositionCheckType === "ally" || dispositionCheckType === "enemyAlly") ? MidiQOL.computeDistance(targetedToken,t, {wallsBlock: true, includeCover: true}) : MidiQOL.computeDistance(initiatingToken,t, {wallsBlock: true, includeCover: true});
+        let range = game.gps.convertFromFeet({range: rangeTotal});
+
+        // Check if the token has the actual item to use (With some checking for 2014/2024)
+        if(!checkItem && sourceRules === "2024") {
+            if(debugEnabled) console.error(`${itemName} 2024 for ${t.actor.name} failed at check if reaction item exists`);
+            return;
+        }
+
+        else if(!checkItem) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at check if reaction item exists`);
+            return;
+        }
+
+        // Check if the tokens reaction already used
+        else if(reactionCheck && MidiQOL.hasUsedReaction(t.actor)) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at reaction available`);
+            return;
+        }
+
+        // Check if the token is incapacitated
+        else if(MidiQOL.checkIncapacitated(t)) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at is incapacitated`);
+            return;
+        }
+
+        // Check if the token is the initiating token or not a qualifying token disposition
+        else if(dispositionCheck && (((dispositionCheckType === "enemy" || dispositionCheckType === "enemyAlly") && t.document.disposition === initiatingToken.document.disposition) || (dispositionCheckType === "ally" && t.document.disposition !== initiatingToken.document.disposition))) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at token disposition check`);
+            return;
+        }
+
+        // Check if token can see initiating token
+        else if(sightCheck && ((sightCheckType === "ally" && !MidiQOL.canSee(t, targetedToken)) || (sightCheckType === "enemy" && !MidiQOL.canSee(t, initiatingToken)))) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at sight check`);
+            return;
+        }
+
+        // Check if token is under an effect preventing reactions
+        else if(reactionCheck && hasEffectOrigin) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at spell effect preventing reaction`);
+            return;
+        }
+
+        // Check if token is within range
+        else if(rangeCheck && (measuredDistance === -1 || (measuredDistance > range))) {
+            if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at range check`);
+            return;
+        }
+
+        // Check if the token has available spell slots/uses
+        if(itemType === "spell") {
+            let multiClass;
+            if (t.actor.classes?.warlock) {
+                const classKeys = Object.keys(t.actor.classes);
+                multiClass = classKeys.some(className => className !== 'warlock');
+            }
+    
+    
+            const spells = t.actor.system.spells;
+            let spellLevel = checkItem?.system?.level;
+            let checkType = checkItem?.system?.preparation?.mode;
+            let hasSpellSlots = false;
+            if(checkType === "prepared" && checkItem?.system?.preparation?.prepared === false) return false;
+            if(checkType === "prepared" || checkType === "always")
+            {
+                for (let level = spellLevel; level <= 9; level++) {
+                    let spellSlot = t.actor.system.spells[`spell${level}`].value;
+                    if (spellSlot > 0) {
+                        hasSpellSlots = true;
+                        break;
+                    }
+                }
+            }
+            else if(checkType === "pact" && multiClass)
+            {
+                let spellSlotValue = spells.pact.value;
+                if (spellSlotValue > 0) hasSpellSlots = true;
+                else {
+                    for (let level = spellLevel; level <= 9; level++) {
+                        let spellSlot = t.actor.system?.spells[`spell${level}`]?.value;
+                        if (spellSlot > 0) {
+                            hasSpellSlots = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            else if(checkType === "pact")
+            {
+                let spellSlotValue = spells.pact.value;
+                if (spellSlotValue > 0) hasSpellSlots = true;
+            }
+            else if(checkType === "innate" || checkType === "atwill")
+            {
+                let slotValue = checkItem.system.uses.max - checkItem.system.uses.spent;
+                let slotEnabled = checkItem.system.uses.max;
+                if (slotValue > 0 || !slotEnabled) hasSpellSlots = true;
+            }
+    
+            if (!hasSpellSlots) {
+                if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at check valid spell slots/preparation`);
+                return false;
+            }
+        }
+
+        // Check if the token has available resource or item uses
+        if(itemType === "feature") {
+            let itemNames;
+            if(itemChecked) itemNames = itemChecked.map(item => item.toLowerCase());
+            else itemNames = [checkItem.name.toLowerCase()];
+            let resourceExistsWithValue;
+            let itemExistsWithValue;
+
+            if(itemNames.includes("legres")) resourceExistsWithValue = t.actor.system.resources.legres.value !== 0 ? true : false;
+            else itemExistsWithValue = t.actor.items.some(i => (itemNames.includes(i.name.toLowerCase()) || itemNames.includes(i.identifier.toLowerCase())) && i.system.uses?.spent < i.system.uses?.max);
+
+            if (!itemExistsWithValue && !resourceExistsWithValue) {
+                if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at check valid feature item/resource uses`);
+                return;
+            }
+        }
+
+        if(itemType === "item") {
+            const itemNames = itemChecked.map(item => item.toLowerCase());
+            let itemExists = t.actor.items.some(i => itemNames.includes(i.identifier.toLowerCase()) || itemNames.includes(i.name.toLowerCase()) || itemNames.includes(i.system.actionType?.toLowerCase()));
+            if(!itemExists)
+
+            if (!itemExists) {
+                if(debugEnabled) console.error(`${itemName} for ${t.actor.name} failed at valid item supporting feature`);
+                return;
+            }
+        }
+
+        if(debugEnabled) {
+            console.warn(`%c${itemName} for ${t.actor.name} Reaction Validation Passed`, 'font-weight: bold');
+        }
+
+        return t;
     };
 
     userDialogPromise
@@ -452,14 +634,31 @@ export function findValidTokens({
             }
           }
         }
-      } else if (checkType === "pact") {
-        let spellSlotValue = spells.pact.value;
-        if (spellSlotValue > 0) hasSpellSlots = true;
-      } else if (checkType === "innate" || checkType === "atwill") {
-        let slotValue = checkItem.system.uses.max - checkItem.system.uses.spent;
-        let slotEnabled = checkItem.system.uses.max;
-        if (slotValue > 0 || slotEnabled === "") hasSpellSlots = true;
-      }
+        else if(checkType === "pact" && multiClass)
+        {
+            let spellSlotValue = spells.pact.value;
+            if (spellSlotValue > 0) hasSpellSlots = true;
+            else {
+                for (let level = spellLevel; level <= 9; level++) {
+                    let spellSlot = targetedToken.actor.system?.spells[`spell${level}`]?.value;
+                    if (spellSlot > 0) {
+                        hasSpellSlots = true;
+                        break;
+                    }
+                }
+            }
+        }
+        else if(checkType === "pact")
+        {
+            let spellSlotValue = spells.pact.value;
+            if (spellSlotValue > 0) hasSpellSlots = true;
+        }
+        else if(checkType === "innate" || checkType === "atwill")
+        {
+            let slotValue = checkItem.system.uses.max - checkItem.system.uses.spent;
+            let slotEnabled = checkItem.system.uses.max;
+            if (slotValue > 0 || !slotEnabled) hasSpellSlots = true;
+        }
 
       if (!hasSpellSlots) {
         if (debugEnabled)
@@ -1660,28 +1859,20 @@ export async function replaceChatCard({
   else rollData = null;
   let rollContent = rollData ? await rollData.render() : "";
 
-  let msgHistory = [];
-  game.messages.reduce((list, message) => {
-    if (
-      message.flags.dnd5e?.item.id === item._id &&
-      message.speaker.token === token.document.id
-    )
-      msgHistory.push(message.id);
-  }, msgHistory);
-  let itemCard = msgHistory[msgHistory?.length - 1];
-  let chatMessage = false;
-  if (itemCard) chatMessage = await game.messages.get(itemCard);
-  if (chatMessage) {
-    let content = await foundry.utils.duplicate(chatMessage.content);
-    let insertPosition = content.indexOf(
-      '<div class="end-midi-qol-attack-roll"></div>'
-    );
-    if (insertPosition !== -1) {
-      content =
-        content.slice(0, insertPosition) +
-        rollContent +
-        chatContent +
-        content.slice(insertPosition);
+    let msgHistory = [];
+    game.messages.reduce((list, message) => {
+        if (message.flags.dnd5e?.item?.id === item?._id && message.speaker.token === token.document.id) msgHistory.push(message.id);
+    }, msgHistory);
+    let itemCard = msgHistory[msgHistory?.length - 1];
+    let chatMessage = false;
+    if(itemCard) chatMessage = await game.messages.get(itemCard);
+    if(chatMessage) {
+        let content = await foundry.utils.duplicate(chatMessage.content);
+        let insertPosition = content.indexOf('<div class="end-midi-qol-attack-roll"></div>');
+        if (insertPosition !== -1) {
+            content = content.slice(0, insertPosition) + rollContent + chatContent + content.slice(insertPosition);
+        }
+        await chatMessage.update({ content: content });
     }
     await chatMessage.update({ content: content });
   } else {
